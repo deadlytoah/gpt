@@ -1,3 +1,4 @@
+import json
 import openai
 import os
 import subprocess
@@ -107,6 +108,20 @@ class StateException(Exception):
     def __init__(self, state):
         self.state = state
 
+class UnknownCommandException(Exception):
+    """
+    Indicates the given command is invalid.
+    """
+    def __init__(self, command):
+        super(UnknownCommandException, self).__init__(f'unknown command {command}')
+        self.command = command
+
+class Timeout(Enum):
+    DEFAULT = 300
+    LONG = 30000
+
+MetadataType = Dict[str, Union[str, int]]
+
 def ok(socket, array):
     socket.send_multipart([b"OK"] + [arg.encode() for arg in array])
 
@@ -115,6 +130,38 @@ def error(socket, code, message):
 
 def list_commands(arguments: List[str]) -> List[str]:
     return list(command_map().keys())
+
+def metadata(arguments: List[str]) -> List[str]:
+    """
+    Retrieves metadata for specified service functions.
+
+    Args:
+        arguments: A list of names of the service functions to
+        retrieve metadata for.
+
+    Returns:
+        A list of metadata for the specified service functions, as a
+        JSON-encoded string.
+
+    Raises:
+        ValueError: arguments are empty.
+        RuntimeError: metadata is missing.
+    """
+    if len(arguments) > 0:
+        return [json.dumps(__metadata_impl(command)) for command in arguments]
+    else:
+        raise ValueError("Expected one or more commands as arguments")
+
+def __metadata_impl(function_name: str) -> MetadataType:
+    command = command_map().get(function_name)
+    if command:
+        metadata = command.get('metadata')
+        if metadata and isinstance(metadata, Dict):
+            return metadata
+        else:
+            raise RuntimeError(f'metadata missing for {function_name}')
+    else:
+        raise UnknownCommandException(command)
 
 def send(arguments: List[str]) -> List[str]:
     """
@@ -181,10 +228,29 @@ def __send_impl(system_message: SystemMessage, messages: List[Union[UserMessage,
     else:
         raise ProtocolException('choices key missing or empty')
 
-def command_map() -> Dict[str, Callable[[List[str]], List[str]]]:
+def command_map() -> Dict[str, Dict[str, Union[Callable[[List[str]], List[str]], MetadataType]]]:
     return {
-        "help": list_commands,
-        "send": send,
+        "help": {
+            'handler': list_commands,
+            'metadata': {
+                'description': 'Lists available service commands.',
+                'timeout': Timeout.DEFAULT.value,
+            },
+        },
+        "metadata": {
+            'handler': metadata,
+            'metadata': {
+                'description': 'Describes the given command.',
+                'timeout': Timeout.DEFAULT.value,
+            },
+        },
+        "send": {
+            'handler': send,
+            'metadata': {
+                'description': 'Sends a chat completion request to the OpenAI service.',
+                'timeout': Timeout.LONG.value,
+            },
+        },
     }
 
 def main() -> None:
@@ -225,27 +291,36 @@ def main() -> None:
             print("received command", command, file=sys.stderr)
 
             # Process the request
-            if command in command_map():
-                response = command_map()[command](arguments)
+            command_info = command_map().get(command)
+            if command_info:
+                handler = command_info.get('handler')
+                if handler and callable(handler):
+                    response = handler(arguments)
 
-                # Send the response back to the client
-                if state == State.SENDING:
-                    ok(socket, response)
-                    state = State.RECEIVING
+                    # Send the response back to the client
+                    if state == State.SENDING:
+                        ok(socket, response)
+                        state = State.RECEIVING
+                    else:
+                        raise StateException(state)
                 else:
-                    raise StateException(state)
+                    raise RuntimeError(f'handler missing or not valid for {command}')
             else:
-                if state == State.SENDING:
-                    error(socket, ErrorCode.UNKNOWN_COMMAND, "unknown command")
-                    state = State.RECEIVING
-                else:
-                    raise StateException(state)
+                raise UnknownCommandException(f'unknown command {command}')
 
         except KeyboardInterrupt:
             break
         except StateException as e:
             print("Illegal state: ", e.state, file=sys.stderr)
             exit(1)
+        except UnknownCommandException as e:
+            error_response = str(e)
+            if state == State.SENDING:
+                error(socket, ErrorCode.UNKNOWN_COMMAND, "unknown command")
+                state = State.RECEIVING
+            else:
+                print("Illegal state: ", state, file=sys.stderr)
+                print("While trying to respond with error message: ", error_response, file=sys.stderr)
         except Exception as e:
             # Handle any errors that occur during processing
             error_response = str(e)
