@@ -5,6 +5,7 @@ import subprocess
 import sys
 import zmq
 
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Union
 
@@ -120,7 +121,24 @@ class Timeout(Enum):
     DEFAULT = 300
     LONG = 30000
 
-MetadataType = Dict[str, Union[str, int]]
+@dataclass
+class Metadata:
+    name: str
+    description: str
+    timeout: Timeout
+    arguments: str
+    returns: str
+    errors: str
+
+    def to_dictionary(self) -> Dict[str, Any]:
+        return {
+            'name': self.name,
+            'description': self.description,
+            'timeout': self.timeout.value,
+            'arguments': self.arguments,
+            'returns': self.returns,
+            'errors': self.errors
+        }
 
 def ok(socket, array):
     socket.send_multipart([b"OK"] + [arg.encode() for arg in array])
@@ -130,6 +148,26 @@ def error(socket, code, message):
 
 def list_commands(arguments: List[str]) -> List[str]:
     return list(command_map().keys())
+
+def help_screen(arguments: List[str]) -> List[str]:
+    response: List[str] = []
+    for command, command_info in command_map().items():
+        metadata = command_info.get('metadata')
+        if metadata and isinstance(metadata, Metadata):
+            help_string = f'**{command}**\\\n'
+            help_string += f'{metadata.description}\\\n'
+            if metadata.timeout.value > 300:
+                help_string += 'Can take a long time to run.\\\n'
+            help_string += '\\\n**Arguments**\\\n'
+            help_string += f'{metadata.arguments}\\\n\\\n'
+            help_string += '**Returns**\\\n'
+            help_string += f'{metadata.returns}\\\n\\\n'
+            help_string += '**Errors**\\\n'
+            help_string += metadata.errors
+            response.append(help_string)
+        else:
+            raise RuntimeError(f'metadata missing or invalid for {command}')
+    return response
 
 def metadata(arguments: List[str]) -> List[str]:
     """
@@ -148,15 +186,15 @@ def metadata(arguments: List[str]) -> List[str]:
         RuntimeError: metadata is missing.
     """
     if len(arguments) > 0:
-        return [json.dumps(__metadata_impl(command)) for command in arguments]
+        return [json.dumps(__metadata_impl(command).to_dictionary()) for command in arguments]
     else:
         raise ValueError("Expected one or more commands as arguments")
 
-def __metadata_impl(function_name: str) -> MetadataType:
+def __metadata_impl(function_name: str) -> Metadata:
     command = command_map().get(function_name)
     if command:
         metadata = command.get('metadata')
-        if metadata and isinstance(metadata, Dict):
+        if metadata and isinstance(metadata, Metadata):
             return metadata
         else:
             raise RuntimeError(f'metadata missing for {function_name}')
@@ -228,28 +266,36 @@ def __send_impl(system_message: SystemMessage, messages: List[Union[UserMessage,
     else:
         raise ProtocolException('choices key missing or empty')
 
-def command_map() -> Dict[str, Dict[str, Union[Callable[[List[str]], List[str]], MetadataType]]]:
+def command_map() -> Dict[str, Dict[str, Union[Callable[[List[str]], List[str]], Metadata]]]:
     return {
         "help": {
-            'handler': list_commands,
-            'metadata': {
-                'description': 'Lists available service commands.',
-                'timeout': Timeout.DEFAULT.value,
-            },
+            'handler': help_screen,
+            'metadata': Metadata('help',
+                                 'Describes available service commands.',
+                                 Timeout.DEFAULT, 
+                                 'None',
+                                 'A list of strings describing the available service commands.',
+                                 '*RuntimeError* - metadata is missing or invalid.'),
         },
         "metadata": {
             'handler': metadata,
-            'metadata': {
-                'description': 'Describes the given command.',
-                'timeout': Timeout.DEFAULT.value,
-            },
+            'metadata': Metadata('metadata',
+                                 'Describes the given command.',
+                                 Timeout.DEFAULT,
+                                 'A list of commands to describe.',
+                                 'A list of metadata for the commmands in JSON',
+                                 '''*ValueError* - arguments are empty.\\
+                                    *RuntimeError* - metadata is missing.'''),
         },
         "send": {
             'handler': send,
-            'metadata': {
-                'description': 'Sends a chat completion request to the OpenAI service.',
-                'timeout': Timeout.LONG.value,
-            },
+            'metadata': Metadata('send',
+                                 'Sends a chat completion request to the OpenAI service.',
+                                 Timeout.LONG,
+                                 '''*System message* - Message to the system\\
+                                    Alternating *user* and *assistant* messages''',
+                                 'A list of strings representing the response to the conversation.',
+                                 '*ProtocolException* - Argument passed included less than two messages.'),
         },
     }
 
