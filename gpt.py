@@ -1,13 +1,17 @@
-import openai
 import os
-import pyservice
 import sys
-
-from pyservice import Metadata, ProtocolException
-from pyservice.gpt import AssistantMessage, Message, SystemMessage, UserMessage, build_message
 from typing import Any, Dict, List, Optional, Union
 
+import openai
+
+import pyservice
+from pyservice import Metadata, ProtocolException
+from pyservice.gpt import (AssistantMessage, Message, SystemMessage,
+                           UserMessage, build_message)
+from pyservice.metadata import Arguments, Argument
+
 OPENAI_MODEL = 'gpt-3.5-turbo'
+
 
 def send(arguments: List[str]) -> List[str]:
     """
@@ -48,8 +52,10 @@ def send(arguments: List[str]) -> List[str]:
                 result.append(item)
         return result
 
+
 def __send_impl(system_message: SystemMessage, messages: List[Union[UserMessage, AssistantMessage]]) -> List[Union[str, Message]]:
-    dict_messages = [system_message.to_dictionary()] + [message.to_dictionary() for message in messages]
+    dict_messages = [system_message.to_dictionary()] + [message.to_dictionary()
+                                                        for message in messages]
     dictionary_of_response = openai.ChatCompletion.create(
         model=OPENAI_MODEL,
         messages=dict_messages,
@@ -59,7 +65,8 @@ def __send_impl(system_message: SystemMessage, messages: List[Union[UserMessage,
     if choices and len(choices) > 0:
         for choice in choices:
             finish_reason: Optional[str] = choice.get('finish_reason')
-            dictionary_of_message: Optional[Dict[str, str]] = choice.get('message')
+            dictionary_of_message: Optional[Dict[str, str]] = choice.get(
+                'message')
             if dictionary_of_message:
                 role = dictionary_of_message.get('role')
                 content = dictionary_of_message.get('content')
@@ -67,12 +74,14 @@ def __send_impl(system_message: SystemMessage, messages: List[Union[UserMessage,
                     response.append(finish_reason)
                     response.append(build_message(role, content))
                 else:
-                    raise ProtocolException('missing or empty: finish_reason, role or content')
+                    raise ProtocolException(
+                        'missing or empty: finish_reason, role or content')
             else:
                 raise ProtocolException('missing or empty message')
         return response
     else:
         raise ProtocolException('choices key missing or empty')
+
 
 def main() -> None:
     api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
@@ -82,16 +91,20 @@ def main() -> None:
     else:
         openai.api_key = api_key
 
-    pyservice.register("send",
-                       send,
-                       Metadata('send',
-                                 'Sends a chat completion request to the OpenAI service.',
-                                 pyservice.Timeout.LONG,
-                                 '''*System message* - Message to the system\\
-                                    Alternating *user* and *assistant* messages''',
-                                 'A list of strings representing the response to the conversation.',
-                                 '*ProtocolException* - Argument passed included less than two messages.'))
+    pyservice.register(
+        "send",
+        send,
+        Metadata(
+            name='send',
+            description='Sends a chat completion request to the OpenAI service.',
+            timeout=pyservice.Timeout.LONG,
+            arguments=Arguments.variable_length(Argument(
+                "Message", '''Message to the *system* and then alternating
+                *user* and *assistant* messages''')),
+            returns='A list of strings representing the response to the conversation.',
+            errors='*ProtocolException* - Argument passed included less than two messages.'))
     pyservice.service_main()
+
 
 if __name__ == '__main__':
     main()
