@@ -27,7 +27,7 @@ class GptService(pyservice.Service):
         return "A service that uses the OpenAI API to complete conversations."
 
     @staticmethod
-    def send(arguments: List[str]) -> List[str]:
+    def complete(arguments: List[str]) -> List[str]:
         """
         Sends a chat completion request to OpenAI. The request consists of
         a system message and alternating user and assistant messages.
@@ -57,7 +57,7 @@ class GptService(pyservice.Service):
                     messages.append(UserMessage(text))
                 else:
                     messages.append(AssistantMessage(text))
-            response = GptService.__send_impl(
+            response = GptService.__complete_impl(
                 SystemMessage(arguments[0]), messages)
             result: List[str] = []
             for item in response:
@@ -70,11 +70,11 @@ class GptService(pyservice.Service):
 
     def __register_service_commands(self) -> None:
         self.register_command(
-            "send",
-            GptService.send,
+            "complete",
+            GptService.complete,
             Metadata(
-                name='send',
-                description='Sends a chat completion request to the OpenAI service.',
+                name='complete',
+                description='Makes a chat completion request to the OpenAI service.',
                 timeout=pyservice.Timeout.LONG,
                 arguments=Arguments.variable_length(Argument(
                     "Message", '''Message to the *system* and then alternating
@@ -83,7 +83,7 @@ class GptService(pyservice.Service):
                 errors='*ProtocolException* - Argument passed included less than two messages.'))
 
     @staticmethod
-    def __send_impl(system_message: SystemMessage, messages: List[Union[UserMessage, AssistantMessage]]) -> List[Union[str, Message]]:
+    def __complete_impl(system_message: SystemMessage, messages: List[Union[UserMessage, AssistantMessage]]) -> List[Union[str, Message]]:
         dict_messages = [system_message.to_dictionary()] + [message.to_dictionary()
                                                             for message in messages]
         dictionary_of_response = openai.ChatCompletion.create(
