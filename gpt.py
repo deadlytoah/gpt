@@ -20,10 +20,10 @@ import argparse
 import asyncio
 import os
 import sys
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
 import openai
-
 import pyservice
 from pyservice import Metadata, ProtocolException
 from pyservice.gpt import (AssistantMessage, Message, SystemMessage,
@@ -31,6 +31,12 @@ from pyservice.gpt import (AssistantMessage, Message, SystemMessage,
 from pyservice.metadata import Argument, Arguments
 
 OPENAI_MODEL = 'gpt-3.5-turbo'
+
+
+@dataclass
+class CompleteResponse:
+    reason: str
+    message: Message
 
 
 class GptService(pyservice.Service):
@@ -75,15 +81,14 @@ class GptService(pyservice.Service):
                     messages.append(UserMessage(text))
                 else:
                     messages.append(AssistantMessage(text))
-            response = GptService.__complete_impl(
+            sequence_of_responses = GptService.__complete_impl(
                 SystemMessage(arguments[0]), messages)
             result: List[str] = []
-            for item in response:
-                if isinstance(item, Message):
-                    result.append(item.role)
-                    result.append(item.text)
-                else:
-                    result.append(item)
+            for response in sequence_of_responses:
+                message = response.message
+                result.append(response.reason)
+                result.append(message.role)
+                result.append(message.text)
             return result
 
     def __register_service_commands(self) -> None:
@@ -101,34 +106,31 @@ class GptService(pyservice.Service):
                 errors='*ProtocolException* - Argument passed included less than two messages.'))
 
     @staticmethod
-    def __complete_impl(system_message: SystemMessage, messages: List[Union[UserMessage, AssistantMessage]]) -> List[Union[str, Message]]:
+    def __complete_impl(system_message: SystemMessage, messages: List[UserMessage | AssistantMessage]) -> List[CompleteResponse]:
         dict_messages = [system_message.to_dictionary()] + [message.to_dictionary()
                                                             for message in messages]
         dictionary_of_response = openai.ChatCompletion.create(
             model=OPENAI_MODEL,
             messages=dict_messages,
         )
-        choices: List[Dict[str, Any]] = dictionary_of_response.get('choices')
-        response: List[Union[str, Message]] = []
-        if choices and len(choices) > 0:
-            for choice in choices:
-                finish_reason: Optional[str] = choice.get('finish_reason')
-                dictionary_of_message: Optional[Dict[str, str]] = choice.get(
-                    'message')
-                if dictionary_of_message:
-                    role = dictionary_of_message.get('role')
-                    content = dictionary_of_message.get('content')
-                    if finish_reason and role and content:
-                        response.append(finish_reason)
-                        response.append(build_message(role, content))
-                    else:
-                        raise ProtocolException(
-                            'missing or empty: finish_reason, role or content')
-                else:
-                    raise ProtocolException('missing or empty message')
-            return response
-        else:
-            raise ProtocolException('choices key missing or empty')
+        try:
+            choices: List[Dict[str, Any]
+                          ] = dictionary_of_response['choices']  # type: ignore
+            if len(choices) > 0:
+                response = []
+                for choice in choices:
+                    finish_reason: str = choice['finish_reason']
+                    dictionary_of_message: Dict[str, str] = choice['message']
+                    role = dictionary_of_message['role']
+                    content = dictionary_of_message['content']
+                    response.append(CompleteResponse(
+                        finish_reason, build_message(role, content)))
+                return response
+            else:
+                raise ProtocolException(
+                    f'choices key contains an empty sequence')
+        except KeyError as error:
+            raise ProtocolException(f'{error} key missing or empty')
 
 
 async def main(api_key: str, port: Optional[int]) -> None:
@@ -138,7 +140,8 @@ async def main(api_key: str, port: Optional[int]) -> None:
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Gateway Service for OpenAI\'s GPT')
+    parser = argparse.ArgumentParser(
+        description='Gateway Service for OpenAI\'s GPT')
     parser.add_argument('-p', '--port', type=int,
                         help='The port to listen on.')
     args = parser.parse_args()
