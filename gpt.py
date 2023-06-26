@@ -21,16 +21,22 @@ import asyncio
 import os
 import sys
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
 import openai
 import pyservice
-from pyservice import Metadata, ProtocolException
+from openai import InvalidRequestError
+from pyservice import Metadata, ProtocolException, ServiceException
 from pyservice.gpt import (AssistantMessage, Message, SystemMessage,
                            UserMessage, build_message)
 from pyservice.metadata import Argument, Arguments
 
 OPENAI_MODEL = 'gpt-3.5-turbo'
+
+
+class GptErrorCode(Enum):
+    INVALID_REQUEST = "ERROR_INVALID_REQUEST"
 
 
 @dataclass
@@ -81,15 +87,18 @@ class GptService(pyservice.Service):
                     messages.append(UserMessage(text))
                 else:
                     messages.append(AssistantMessage(text))
-            sequence_of_responses = GptService.__complete_impl(
-                SystemMessage(arguments[0]), messages)
-            result: List[str] = []
-            for response in sequence_of_responses:
-                message = response.message
-                result.append(response.reason)
-                result.append(message.role)
-                result.append(message.text)
-            return result
+            try:
+                sequence_of_responses = GptService.__complete_impl(
+                    SystemMessage(arguments[0]), messages)
+                result: List[str] = []
+                for response in sequence_of_responses:
+                    message = response.message
+                    result.append(response.reason)
+                    result.append(message.role)
+                    result.append(message.text)
+                return result
+            except InvalidRequestError as e:
+                raise ServiceException(GptErrorCode.INVALID_REQUEST, str(e))
 
     def __register_service_commands(self) -> None:
         self.register_command(
